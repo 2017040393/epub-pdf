@@ -93,7 +93,7 @@ class ConverterApp(ttk.Frame):
     def _build_layout(self) -> None:
         self.columnconfigure(0, weight=1)
         ttk.Label(self, text="EPUB 转 PDF", style="Title.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(self, text="可选地使用兼容 OpenAI 的模型接口翻译正文", style="Subtitle.TLabel").grid(row=1, column=0, sticky="w", pady=(3, 18))
+        ttk.Label(self, text="可选地使用兼容 OpenAI Responses API 的模型接口翻译正文", style="Subtitle.TLabel").grid(row=1, column=0, sticky="w", pady=(3, 18))
 
         files = self._panel(row=2)
         files.columnconfigure(1, weight=1)

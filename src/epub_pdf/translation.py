@@ -81,18 +81,12 @@ class OpenAICompatibleTranslator:
         payload = json.dumps(
             {
                 "model": self.config.model,
-                "temperature": 0.2,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": "You are a precise literary translator. Follow the output format exactly.",
-                    },
-                    {"role": "user", "content": prompt},
-                ],
+                "instructions": "You are a precise literary translator. Follow the output format exactly.",
+                "input": prompt,
             },
             ensure_ascii=False,
         ).encode("utf-8")
-        url = self.config.api_base.rstrip("/") + "/chat/completions"
+        url = self.config.api_base.rstrip("/") + "/responses"
         request = Request(
             url,
             data=payload,
@@ -106,12 +100,12 @@ class OpenAICompatibleTranslator:
             try:
                 with urlopen(request, timeout=self.config.timeout_seconds) as response:
                     body = json.loads(response.read().decode("utf-8"))
-                content = body["choices"][0]["message"]["content"].strip()
+                content = _response_text(body)
                 parsed = json.loads(_unwrap_json_fence(content))
                 if not isinstance(parsed, list) or not all(isinstance(item, str) for item in parsed):
                     raise TranslationError("Model response was not a JSON array of strings.")
                 return parsed
-            except (HTTPError, URLError, TimeoutError, KeyError, IndexError, json.JSONDecodeError) as exc:
+            except (HTTPError, URLError, TimeoutError, KeyError, IndexError, ValueError, json.JSONDecodeError) as exc:
                 if attempt == 2:
                     raise TranslationError(f"Translation request failed: {exc}") from exc
                 time.sleep(2**attempt)
@@ -122,3 +116,20 @@ def _unwrap_json_fence(value: str) -> str:
     if value.startswith("```") and value.endswith("```"):
         return value.split("\n", 1)[1].rsplit("```", 1)[0].strip()
     return value
+
+
+def _response_text(response: dict) -> str:
+    output_text = response.get("output_text")
+    if isinstance(output_text, str) and output_text.strip():
+        return output_text.strip()
+
+    parts: list[str] = []
+    for item in response.get("output", []):
+        if item.get("type") != "message":
+            continue
+        for content in item.get("content", []):
+            if content.get("type") == "output_text" and isinstance(content.get("text"), str):
+                parts.append(content["text"])
+    if parts:
+        return "".join(parts).strip()
+    raise ValueError("Responses API response did not include output_text.")

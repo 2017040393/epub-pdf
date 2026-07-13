@@ -1,6 +1,6 @@
 # epub-pdf
 
-将 EPUB 电子书转换为适合连续阅读的 PDF。可选地，在写入 PDF 前通过 OpenAI 兼容的大模型接口翻译章节内容。
+将 EPUB 电子书转换为适合连续阅读的 PDF。可选地，在写入 PDF 前通过 OpenAI 兼容的 Responses API 翻译章节内容。
 
 ## 安装
 
@@ -43,7 +43,7 @@ $env:OPENAI_API_KEY = "your-api-key"
 uv run epub-pdf .\english-book.epub -o .\chinese-book.pdf --translate --target-language "简体中文" --model gpt-5.6-terra --font C:\Windows\Fonts\simhei.ttf
 ```
 
-默认请求地址为 `https://api.openai.com/v1/chat/completions`。兼容 OpenAI Chat Completions 的服务可覆盖地址：
+默认请求地址为 `https://api.openai.com/v1/responses`。兼容 OpenAI Responses API 的服务可覆盖根地址：
 
 ```powershell
 uv run epub-pdf .\book.epub -o .\book.pdf --translate --api-base http://localhost:8000/v1 --model your-model

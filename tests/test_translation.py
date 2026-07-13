@@ -1,4 +1,12 @@
-from epub_pdf.translation import TranslationConfig, _unwrap_json_fence, chunk_paragraphs
+import json
+
+from epub_pdf.translation import (
+    OpenAICompatibleTranslator,
+    TranslationConfig,
+    _response_text,
+    _unwrap_json_fence,
+    chunk_paragraphs,
+)
 
 
 def test_translation_defaults_are_optimized_for_long_context() -> None:
@@ -19,3 +27,43 @@ def test_chunk_paragraphs_keeps_an_oversized_paragraph_intact() -> None:
 
 def test_unwrap_json_markdown_fence() -> None:
     assert _unwrap_json_fence("```json\n[\"ok\"]\n```") == "[\"ok\"]"
+
+
+def test_response_text_falls_back_to_standard_output_items() -> None:
+    assert _response_text({
+        "output": [{"type": "message", "content": [{"type": "output_text", "text": "[\"译文\"]"}]}],
+    }) == "[\"译文\"]"
+
+
+def test_translator_calls_responses_api(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self) -> bytes:
+            return b'{"output_text": "[\\\"Translated\\\"]"}'
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse()
+
+    monkeypatch.setattr("epub_pdf.translation.urlopen", fake_urlopen)
+    translator = OpenAICompatibleTranslator(TranslationConfig(api_base="https://example.test/v1", api_key="test-key"))
+
+    assert translator.translate_paragraphs(["Source text"]) == ["Translated"]
+    assert captured["url"] == "https://example.test/v1/responses"
+    assert captured["payload"] == {
+        "model": "gpt-5.6-terra",
+        "instructions": "You are a precise literary translator. Follow the output format exactly.",
+        "input": (
+            "Translate every item in this JSON array into 简体中文. Keep the same item count and order. "
+            "Preserve names, numbers, code, and inline markup. Return only a valid JSON array of translated strings.\n\n"
+            '["Source text"]'
+        ),
+    }
