@@ -6,9 +6,9 @@ import sys
 from pathlib import Path
 
 from .epub_reader import read_epub
-from .models import Book, Chapter
 from .pdf_writer import write_pdf
-from .translation import OpenAICompatibleTranslator, TranslationConfig, TranslationError
+from .translation import TranslationConfig, TranslationError
+from .translation_progress import TranslationCheckpoint, translate_book_with_checkpoint
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -28,30 +28,12 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def translate_book(book: Book, config: TranslationConfig, progress=None) -> Book:
-    translator = OpenAICompatibleTranslator(config)
-    translated_chapters: list[Chapter] = []
-    for number, chapter in enumerate(book.chapters, start=1):
-        translatable_indexes = [i for i, block in enumerate(chapter.blocks) if block.kind != "code"]
-        source = [chapter.blocks[i].text for i in translatable_indexes]
-        if source:
-            message = f"Translating chapter {number}/{len(book.chapters)}: {chapter.title}"
-            if progress:
-                progress(message)
-            else:
-                print(message, file=sys.stderr)
-            translated = translator.translate_paragraphs(source)
-            for index, text in zip(translatable_indexes, translated):
-                chapter.blocks[index].text = text
-        translated_chapters.append(chapter)
-    return Book(book.title, book.author, translated_chapters)
-
-
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if not args.input.is_file():
         print(f"Input EPUB not found: {args.input}", file=sys.stderr)
         return 2
+    checkpoint: TranslationCheckpoint | None = None
     try:
         book = read_epub(args.input)
         if args.title:
@@ -59,17 +41,25 @@ def main(argv: list[str] | None = None) -> int:
         if args.author:
             book.author = args.author
         if args.translate:
-            book = translate_book(book, TranslationConfig(
-                model=args.model, target_language=args.target_language,
-                api_base=args.api_base, api_key=args.api_key, chunk_size=args.chunk_size,
-            ))
+            book, checkpoint = translate_book_with_checkpoint(
+                book, args.input, args.output,
+                TranslationConfig(
+                    model=args.model, target_language=args.target_language,
+                    api_base=args.api_base, api_key=args.api_key, chunk_size=args.chunk_size,
+                ),
+                progress=lambda message: print(message, file=sys.stderr),
+            )
         font = resolve_font(args.font)
         if font:
             print(f"Using font: {font}", file=sys.stderr)
         print(f"Writing PDF: {args.output}", file=sys.stderr)
         write_pdf(book, args.output, font, args.font_size)
+        if checkpoint:
+            checkpoint.clear()
     except (ValueError, OSError, TranslationError) as exc:
         print(f"Conversion failed: {exc}", file=sys.stderr)
+        if checkpoint and checkpoint.path.exists():
+            print(f"Translation progress was saved to: {checkpoint.path}", file=sys.stderr)
         return 1
     print(f"Done: {args.output}")
     return 0

@@ -1,4 +1,5 @@
 import json
+from http.client import RemoteDisconnected
 
 from epub_pdf.translation import (
     OpenAICompatibleTranslator,
@@ -92,3 +93,36 @@ def test_fetch_available_models_uses_models_endpoint(monkeypatch) -> None:
 
     assert fetch_available_models(TranslationConfig(api_base="https://example.test/v1", api_key="test-key")) == ["model-a", "model-b"]
     assert captured == {"url": "https://example.test/v1/models", "method": "GET"}
+
+
+def test_translator_retries_remote_disconnect(monkeypatch) -> None:
+    attempts = 0
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self) -> bytes:
+            return b'{"output_text": "[\\\"Translated\\\"]"}'
+
+    def fake_urlopen(request, timeout):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise RemoteDisconnected("Remote end closed connection without response")
+        return FakeResponse()
+
+    monkeypatch.setattr("epub_pdf.translation.urlopen", fake_urlopen)
+    retries: list[str] = []
+    translator = OpenAICompatibleTranslator(TranslationConfig(api_key="test-key"), on_retry=retries.append)
+    translator.retry_base_seconds = 0
+
+    assert translator.translate_paragraphs(["Source text"]) == ["Translated"]
+    assert attempts == 3
+    assert retries == [
+        "Temporary API connection issue. Retrying current translation block in 0 second(s) (2/5).",
+        "Temporary API connection issue. Retrying current translation block in 0 second(s) (3/5).",
+    ]

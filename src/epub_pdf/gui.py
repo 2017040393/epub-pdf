@@ -7,10 +7,11 @@ import webbrowser
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from .cli import resolve_font, translate_book
+from .cli import resolve_font
 from .epub_reader import read_epub
 from .pdf_writer import write_pdf
 from .translation import TranslationConfig, fetch_available_models
+from .translation_progress import TranslationCheckpoint, translate_book_with_checkpoint
 
 
 WINDOW_BACKGROUND = "#f5f5f2"
@@ -310,14 +311,17 @@ class ConverterApp(ttk.Frame):
         self.after(100, self._poll_events)
 
     def _convert_worker(self, request: dict) -> None:
+        checkpoint: TranslationCheckpoint | None = None
         try:
             if not request["source"].is_file():
                 raise FileNotFoundError(f"找不到 EPUB 文件：{request['source']}")
             book = read_epub(request["source"])
             if request["translate"]:
                 self.events.put(("status", "正在翻译正文..."))
-                book = translate_book(
+                book, checkpoint = translate_book_with_checkpoint(
                     book,
+                    request["source"],
+                    request["output"],
                     TranslationConfig(
                         model=request["model"], target_language=request["target_language"], api_base=request["api_base"],
                         api_key=request["api_key"], chunk_size=request["chunk_size"],
@@ -326,9 +330,14 @@ class ConverterApp(ttk.Frame):
                 )
             self.events.put(("status", "正在排版并写入 PDF..."))
             write_pdf(book, request["output"], resolve_font(request["font"]))
+            if checkpoint:
+                checkpoint.clear()
             self.events.put(("success", request["output"]))
         except Exception as exc:  # The UI must turn every worker failure into an actionable message.
-            self.events.put(("error", str(exc)))
+            message = str(exc)
+            if checkpoint and checkpoint.path.exists():
+                message += f"\n\n翻译进度已保存。使用相同 EPUB、输出路径、模型和目标语言重新开始，即可继续：\n{checkpoint.path}"
+            self.events.put(("error", message))
 
     def _poll_events(self) -> None:
         try:

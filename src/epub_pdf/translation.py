@@ -3,9 +3,13 @@ from __future__ import annotations
 import json
 import os
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
+from http.client import IncompleteRead, RemoteDisconnected
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+
+from .models import Book, Chapter
 
 
 class TranslationError(RuntimeError):
@@ -80,9 +84,17 @@ def chunk_paragraphs(paragraphs: list[str], max_chars: int) -> list[list[str]]:
 
 
 class OpenAICompatibleTranslator:
-    def __init__(self, config: TranslationConfig) -> None:
+    max_attempts = 5
+    retry_base_seconds = 2
+
+    def __init__(
+        self,
+        config: TranslationConfig,
+        on_retry: Callable[[str], None] | None = None,
+    ) -> None:
         self.config = config
         self.api_key = config.resolved_api_key()
+        self.on_retry = on_retry
 
     def translate_paragraphs(self, paragraphs: list[str]) -> list[str]:
         translated: list[str] = []
@@ -120,7 +132,7 @@ class OpenAICompatibleTranslator:
             },
             method="POST",
         )
-        for attempt in range(3):
+        for attempt in range(1, self.max_attempts + 1):
             try:
                 with urlopen(request, timeout=self.config.timeout_seconds) as response:
                     body = json.loads(response.read().decode("utf-8"))
@@ -129,11 +141,48 @@ class OpenAICompatibleTranslator:
                 if not isinstance(parsed, list) or not all(isinstance(item, str) for item in parsed):
                     raise TranslationError("Model response was not a JSON array of strings.")
                 return parsed
-            except (HTTPError, URLError, TimeoutError, KeyError, IndexError, ValueError, json.JSONDecodeError) as exc:
-                if attempt == 2:
+            except Exception as exc:
+                if not _is_retryable_translation_error(exc) or attempt == self.max_attempts:
                     raise TranslationError(_connection_error_message(exc, "Translation request failed")) from exc
-                time.sleep(2**attempt)
+                delay = min(30, self.retry_base_seconds * (2 ** (attempt - 1)))
+                _report(
+                    self.on_retry,
+                    f"Temporary API connection issue. Retrying current translation block in {delay} second(s) "
+                    f"({attempt + 1}/{self.max_attempts}).",
+                )
+                time.sleep(delay)
         raise AssertionError("unreachable")
+
+
+def translate_book(
+    book: Book,
+    config: TranslationConfig,
+    progress: Callable[[str], None] | None = None,
+    completed_chapter_indexes: set[int] | None = None,
+    on_chapter_complete: Callable[[int, Chapter], None] | None = None,
+) -> Book:
+    """Translate each unfinished chapter and notify callers after durable chapter boundaries."""
+    translator = OpenAICompatibleTranslator(config, on_retry=progress)
+    completed = completed_chapter_indexes or set()
+    for chapter_index, chapter in enumerate(book.chapters):
+        number = chapter_index + 1
+        if chapter_index in completed:
+            _report(progress, f"Resuming: chapter {number}/{len(book.chapters)} is already translated.")
+            continue
+        translatable_indexes = [i for i, block in enumerate(chapter.blocks) if block.kind != "code"]
+        source = [chapter.blocks[i].text for i in translatable_indexes]
+        if not source:
+            if on_chapter_complete:
+                on_chapter_complete(chapter_index, chapter)
+            continue
+        _report(progress, f"Translating chapter {number}/{len(book.chapters)}: {chapter.title}")
+        translated = translator.translate_paragraphs(source)
+        for index, text in zip(translatable_indexes, translated):
+            chapter.blocks[index].text = text
+        if on_chapter_complete:
+            on_chapter_complete(chapter_index, chapter)
+        _report(progress, f"Saved translation progress: chapter {number}/{len(book.chapters)}.")
+    return book
 
 
 def _unwrap_json_fence(value: str) -> str:
@@ -170,3 +219,16 @@ def _connection_error_message(exc: Exception, prefix: str = "API connection fail
             pass
         return f"{prefix}: HTTP {exc.code}{f': {detail}' if detail else ''}"
     return f"{prefix}: {exc}"
+
+
+def _is_retryable_translation_error(exc: Exception) -> bool:
+    if isinstance(exc, HTTPError):
+        return exc.code in {408, 429, 500, 502, 503, 504}
+    if isinstance(exc, (URLError, TimeoutError, RemoteDisconnected, IncompleteRead, ConnectionError)):
+        return True
+    return isinstance(exc, OSError)
+
+
+def _report(progress: Callable[[str], None] | None, message: str) -> None:
+    if progress:
+        progress(message)
