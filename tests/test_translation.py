@@ -6,6 +6,7 @@ from epub_pdf.translation import (
     _response_text,
     _unwrap_json_fence,
     chunk_paragraphs,
+    fetch_available_models,
 )
 
 
@@ -67,3 +68,27 @@ def test_translator_calls_responses_api(monkeypatch) -> None:
             '["Source text"]'
         ),
     }
+
+
+def test_fetch_available_models_uses_models_endpoint(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self) -> bytes:
+            return b'{"data": [{"id": "model-b"}, {"id": "model-a"}, {"id": "model-a"}]}'
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["method"] = request.method
+        return FakeResponse()
+
+    monkeypatch.setattr("epub_pdf.translation.urlopen", fake_urlopen)
+
+    assert fetch_available_models(TranslationConfig(api_base="https://example.test/v1", api_key="test-key")) == ["model-a", "model-b"]
+    assert captured == {"url": "https://example.test/v1/models", "method": "GET"}

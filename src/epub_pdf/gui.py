@@ -10,7 +10,7 @@ from tkinter import filedialog, messagebox, ttk
 from .cli import resolve_font, translate_book
 from .epub_reader import read_epub
 from .pdf_writer import write_pdf
-from .translation import TranslationConfig
+from .translation import TranslationConfig, fetch_available_models
 
 
 WINDOW_BACKGROUND = "#f5f5f2"
@@ -48,8 +48,11 @@ class ConverterApp(ttk.Frame):
     def __init__(self, root: tk.Tk) -> None:
         super().__init__(root, padding=(28, 24))
         self.root = root
-        self.events: queue.Queue[tuple[str, str | Path]] = queue.Queue()
+        self.events: queue.Queue[tuple[str, object]] = queue.Queue()
+        self.connection_events: queue.Queue[tuple[str, object]] = queue.Queue()
         self.running = False
+        self.connection_running = False
+        self.models_loaded = False
         self.output_file: Path | None = None
 
         self.source_var = tk.StringVar()
@@ -62,8 +65,12 @@ class ConverterApp(ttk.Frame):
         self.language_var = tk.StringVar(value="简体中文")
         self.chunk_size_var = tk.StringVar(value="20000")
         self.status_var = tk.StringVar(value="选择一本 EPUB 开始转换")
+        self.api_status_var = tk.StringVar(value="填写 API 地址和密钥后测试连接。")
         self.output_status_var = tk.StringVar(value="输出文件将在转换完成后显示")
         self.translation_widgets: list[ttk.Widget] = []
+
+        self.api_base_var.trace_add("write", self._clear_loaded_models)
+        self.api_key_var.trace_add("write", self._clear_loaded_models)
 
         self._configure_window()
         self._build_layout()
@@ -110,11 +117,14 @@ class ConverterApp(ttk.Frame):
         )
         self.translation_check.grid(row=0, column=0, columnspan=3, sticky="w", padx=14, pady=(13, 10))
         self._field_row(translation, 1, "API 地址", self.api_base_var)
-        self._field_row(translation, 2, "模型", self.model_var)
-        self._field_row(translation, 3, "API 密钥", self.api_key_var, show="*")
-        self._language_row(translation, 4)
-        self._field_row(translation, 5, "请求字符数", self.chunk_size_var)
-        ttk.Label(translation, text="密钥只用于本次请求，不会保存到文件。", style="Muted.TLabel").grid(row=6, column=1, sticky="w", pady=(0, 13))
+        self._field_row(translation, 2, "API 密钥", self.api_key_var, show="*")
+        self.connection_button = ttk.Button(translation, text="测试连接并获取模型", command=self._test_connection)
+        self.connection_button.grid(row=3, column=1, sticky="w", pady=(6, 3))
+        ttk.Label(translation, textvariable=self.api_status_var, style="Muted.TLabel", wraplength=600).grid(row=4, column=1, columnspan=2, sticky="w", pady=(0, 6))
+        self._model_row(translation, 5)
+        self._language_row(translation, 6)
+        self._field_row(translation, 7, "请求字符数", self.chunk_size_var)
+        ttk.Label(translation, text="密钥只用于本次请求，不会保存到文件。", style="Muted.TLabel").grid(row=8, column=1, sticky="w", pady=(0, 13))
 
         action = self._panel(row=4, pady=(14, 0))
         action.columnconfigure(0, weight=1)
@@ -160,6 +170,11 @@ class ConverterApp(ttk.Frame):
         selector.grid(row=row, column=1, columnspan=2, sticky="ew", padx=(0, 14), pady=5)
         self.translation_widgets.append(selector)
 
+    def _model_row(self, parent: ttk.Frame, row: int) -> None:
+        ttk.Label(parent, text="模型").grid(row=row, column=0, sticky="w", padx=(14, 12), pady=5)
+        self.model_selector = ttk.Combobox(parent, textvariable=self.model_var, state="disabled")
+        self.model_selector.grid(row=row, column=1, columnspan=2, sticky="ew", padx=(0, 14), pady=5)
+
     def _choose_source(self) -> None:
         selected = filedialog.askopenfilename(title="选择 EPUB 文件", filetypes=[("EPUB 文件", "*.epub"), ("所有文件", "*.*")])
         if selected:
@@ -184,10 +199,71 @@ class ConverterApp(ttk.Frame):
 
     def _set_translation_state(self) -> None:
         for widget in self.translation_widgets:
+            if self.connection_running:
+                widget.configure(state="disabled")
+                continue
             if isinstance(widget, ttk.Combobox):
                 widget.configure(state="readonly" if self.translate_var.get() else "disabled")
             else:
                 widget.configure(state="normal" if self.translate_var.get() else "disabled")
+        self.connection_button.configure(state="normal" if self.translate_var.get() and not self.connection_running else "disabled")
+        self.model_selector.configure(state="readonly" if self.translate_var.get() and self.models_loaded else "disabled")
+
+    def _clear_loaded_models(self, *_args) -> None:
+        if not self.models_loaded:
+            return
+        self.models_loaded = False
+        self.model_var.set("")
+        self.model_selector.configure(values=(), state="disabled")
+        self.api_status_var.set("API 地址或密钥已修改，请重新测试连接。")
+
+    def _test_connection(self) -> None:
+        if self.connection_running:
+            return
+        api_base = self.api_base_var.get().strip()
+        api_key = self.api_key_var.get().strip()
+        if not api_base:
+            messagebox.showerror("缺少 API 地址", "请填写 API 根地址，例如 https://api.openai.com/v1。", parent=self.root)
+            return
+        if not api_key:
+            messagebox.showerror("缺少 API 密钥", "请填写 API 密钥后再测试连接。", parent=self.root)
+            return
+
+        self.connection_running = True
+        self.models_loaded = False
+        self.model_selector.configure(values=(), state="disabled")
+        self.connection_button.configure(state="disabled")
+        self.api_status_var.set("正在测试连接并获取模型列表...")
+        threading.Thread(target=self._connection_worker, args=(api_base, api_key), daemon=True).start()
+        self.after(100, self._poll_connection_events)
+
+    def _connection_worker(self, api_base: str, api_key: str) -> None:
+        try:
+            models = fetch_available_models(TranslationConfig(api_base=api_base, api_key=api_key))
+            self.connection_events.put(("success", models))
+        except Exception as exc:  # Keep worker errors visible in the GUI instead of leaving controls locked.
+            self.connection_events.put(("error", str(exc)))
+
+    def _poll_connection_events(self) -> None:
+        try:
+            event, value = self.connection_events.get_nowait()
+        except queue.Empty:
+            if self.connection_running:
+                self.after(100, self._poll_connection_events)
+            return
+        self.connection_running = False
+        if event == "success":
+            models = list(value)
+            self.models_loaded = True
+            self.model_selector.configure(values=models)
+            if self.model_var.get() not in models:
+                self.model_var.set("")
+            self.api_status_var.set(f"连接成功，已获取 {len(models)} 个模型。请选择一个支持 Responses API 的文本模型。")
+            self._set_translation_state()
+        else:
+            self.api_status_var.set("连接失败。请检查 API 地址、密钥和服务权限。")
+            self._set_translation_state()
+            messagebox.showerror("API 连接失败", str(value), parent=self.root)
 
     def _start_conversion(self) -> None:
         if self.running:
@@ -200,11 +276,14 @@ class ConverterApp(ttk.Frame):
         if not output_text:
             messagebox.showerror("缺少输出路径", "请选择 PDF 输出位置。", parent=self.root)
             return
+        if self.connection_running:
+            messagebox.showinfo("正在测试连接", "请等待模型列表加载完成后再开始转换。", parent=self.root)
+            return
         output = normalize_output_path(Path(output_text))
         if output != Path(output_text):
             self.output_var.set(str(output))
         if self.translate_var.get() and (not self.api_base_var.get().strip() or not self.model_var.get().strip()):
-            messagebox.showerror("翻译配置不完整", "启用翻译时必须填写 API 地址和模型名。", parent=self.root)
+            messagebox.showerror("翻译配置不完整", "请先测试连接并从模型列表中选择一个模型。", parent=self.root)
             return
         try:
             chunk_size = int(self.chunk_size_var.get())

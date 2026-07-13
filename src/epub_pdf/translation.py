@@ -30,6 +30,30 @@ class TranslationConfig:
         return key
 
 
+def fetch_available_models(config: TranslationConfig) -> list[str]:
+    """Verify credentials and return model IDs exposed by an OpenAI-compatible API."""
+    url = config.api_base.rstrip("/") + "/models"
+    request = Request(
+        url,
+        headers={"Authorization": f"Bearer {config.resolved_api_key()}"},
+        method="GET",
+    )
+    try:
+        with urlopen(request, timeout=config.timeout_seconds) as response:
+            body = json.loads(response.read().decode("utf-8"))
+    except (HTTPError, URLError, TimeoutError, json.JSONDecodeError) as exc:
+        raise TranslationError(_connection_error_message(exc)) from exc
+
+    models = sorted({
+        item["id"]
+        for item in body.get("data", [])
+        if isinstance(item, dict) and isinstance(item.get("id"), str)
+    })
+    if not models:
+        raise TranslationError("API connection succeeded, but the response did not include any model IDs.")
+    return models
+
+
 def chunk_paragraphs(paragraphs: list[str], max_chars: int) -> list[list[str]]:
     """Group paragraphs while preserving a one-to-one source/output mapping."""
     if max_chars < 100:
@@ -107,7 +131,7 @@ class OpenAICompatibleTranslator:
                 return parsed
             except (HTTPError, URLError, TimeoutError, KeyError, IndexError, ValueError, json.JSONDecodeError) as exc:
                 if attempt == 2:
-                    raise TranslationError(f"Translation request failed: {exc}") from exc
+                    raise TranslationError(_connection_error_message(exc, "Translation request failed")) from exc
                 time.sleep(2**attempt)
         raise AssertionError("unreachable")
 
@@ -133,3 +157,16 @@ def _response_text(response: dict) -> str:
     if parts:
         return "".join(parts).strip()
     raise ValueError("Responses API response did not include output_text.")
+
+
+def _connection_error_message(exc: Exception, prefix: str = "API connection failed") -> str:
+    if isinstance(exc, HTTPError):
+        detail = ""
+        try:
+            body = json.loads(exc.read().decode("utf-8"))
+            error = body.get("error", body)
+            detail = error.get("message", "") if isinstance(error, dict) else ""
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            pass
+        return f"{prefix}: HTTP {exc.code}{f': {detail}' if detail else ''}"
+    return f"{prefix}: {exc}"
