@@ -1,0 +1,17 @@
+LICENSE
+README.md
+pyproject.toml
+src/epub_pdf/__init__.py
+src/epub_pdf/cli.py
+src/epub_pdf/epub_reader.py
+src/epub_pdf/models.py
+src/epub_pdf/pdf_writer.py
+src/epub_pdf/translation.py
+src/epub_pdf.egg-info/PKG-INFO
+src/epub_pdf.egg-info/SOURCES.txt
+src/epub_pdf.egg-info/dependency_links.txt
+src/epub_pdf.egg-info/entry_points.txt
+src/epub_pdf.egg-info/requires.txt
+src/epub_pdf.egg-info/top_level.txt
+tests/test_epub_reader.py
+tests/test_translation.py
