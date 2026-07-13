@@ -1,4 +1,10 @@
-from epub_pdf.translation import _unwrap_json_fence, chunk_paragraphs
+from epub_pdf.translation import TranslationConfig, _unwrap_json_fence, chunk_paragraphs
+
+
+def test_translation_defaults_are_optimized_for_long_context() -> None:
+    config = TranslationConfig()
+    assert config.model == "gpt-5.6-terra"
+    assert config.chunk_size == 20000
 
 
 def test_chunk_paragraphs_preserves_order_and_limit() -> None:

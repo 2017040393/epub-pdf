@@ -21,21 +21,25 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--font-size", type=float, default=10.5, help="body font size (default: 10.5)")
     parser.add_argument("--translate", action="store_true", help="translate body paragraphs through an LLM")
     parser.add_argument("--target-language", default="简体中文", help="translation target (default: 简体中文)")
-    parser.add_argument("--model", default="gpt-4.1-mini", help="model name")
+    parser.add_argument("--model", default="gpt-5.6-terra", help="model name")
     parser.add_argument("--api-base", default="https://api.openai.com/v1", help="OpenAI-compatible API root")
     parser.add_argument("--api-key", help="API key; defaults to OPENAI_API_KEY")
-    parser.add_argument("--chunk-size", type=int, default=5000, help="max source chars per translation request")
+    parser.add_argument("--chunk-size", type=int, default=20000, help="max source chars per translation request")
     return parser
 
 
-def translate_book(book: Book, config: TranslationConfig) -> Book:
+def translate_book(book: Book, config: TranslationConfig, progress=None) -> Book:
     translator = OpenAICompatibleTranslator(config)
     translated_chapters: list[Chapter] = []
     for number, chapter in enumerate(book.chapters, start=1):
         translatable_indexes = [i for i, block in enumerate(chapter.blocks) if block.kind != "code"]
         source = [chapter.blocks[i].text for i in translatable_indexes]
         if source:
-            print(f"Translating chapter {number}/{len(book.chapters)}: {chapter.title}", file=sys.stderr)
+            message = f"Translating chapter {number}/{len(book.chapters)}: {chapter.title}"
+            if progress:
+                progress(message)
+            else:
+                print(message, file=sys.stderr)
             translated = translator.translate_paragraphs(source)
             for index, text in zip(translatable_indexes, translated):
                 chapter.blocks[index].text = text
@@ -59,7 +63,7 @@ def main(argv: list[str] | None = None) -> int:
                 model=args.model, target_language=args.target_language,
                 api_base=args.api_base, api_key=args.api_key, chunk_size=args.chunk_size,
             ))
-        font = _resolve_font(args.font)
+        font = resolve_font(args.font)
         if font:
             print(f"Using font: {font}", file=sys.stderr)
         print(f"Writing PDF: {args.output}", file=sys.stderr)
@@ -71,7 +75,7 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _resolve_font(explicit_font: Path | None) -> Path | None:
+def resolve_font(explicit_font: Path | None) -> Path | None:
     if explicit_font:
         return explicit_font
     windows_dir = Path(os.environ.get("WINDIR", r"C:\Windows"))

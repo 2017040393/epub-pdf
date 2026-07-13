@@ -14,11 +14,11 @@ class TranslationError(RuntimeError):
 
 @dataclass(frozen=True)
 class TranslationConfig:
-    model: str = "gpt-4.1-mini"
+    model: str = "gpt-5.6-terra"
     target_language: str = "简体中文"
     api_base: str = "https://api.openai.com/v1"
     api_key: str | None = None
-    chunk_size: int = 5000
+    chunk_size: int = 20000
     timeout_seconds: int = 90
 
     def resolved_api_key(self) -> str:
